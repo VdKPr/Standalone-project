@@ -1,0 +1,13 @@
+# environments
+venv_SP/
+.venv/
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# generated data (reproducible from configs + seeds)
+data/processed/
