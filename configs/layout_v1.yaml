@@ -1,0 +1,83 @@
+# Phase 2 layout generator. All lengths in nm.
+# Pitch presets are approximate public orders of magnitude (see docs/phase1_research_image_model.md, section 2.5),
+# not the values of any specific process.
+
+seed: 1234
+preset: intermediate
+
+world:
+  size_nm: 14000           # square world: 10 um search FOV + margin for later drift/rotation
+  fov_nm: 10000            # search FOV  = 1000 px x 10 nm/px
+  reference_fov_nm: 1000   # reference FOV = 1000 px x 1 nm/px
+  min_block_nm: 2000
+  max_block_nm: 5000
+  stop_split_prob: 0.3
+  block_gap_nm: 150        # isolation spacing between blocks
+  block_weights: {logic: 0.40, sram: 0.15, contact_array: 0.10, routing: 0.15, marks: 0.10, fill: 0.10}
+
+target:
+  class_weights: {unique: 0.4, quasi_repeat: 0.3, periodic: 0.3}
+  margin_nm: 100           # the full reference footprint stays this far inside the search FOV
+  max_tries: 20000
+
+render:
+  size_px: 1000
+  search_pitch_nm: 10.0
+  reference_pitch_nm: 1.0
+  search_supersample: 4
+  reference_supersample: 2
+  layer_order: [ACTIVE, POLY, CONTACT, M1]   # bottom -> top
+  gray_levels: {background: 0.10, ACTIVE: 0.30, POLY: 0.55, CONTACT: 0.95, M1: 0.75}
+
+presets:
+  mature:          # ~65-90 nm class, planar
+    cpp: 240
+    gate_w: 70
+    fin_pitch: 0
+    fin_w: 0
+    m1_pitch: 200
+    m1_w: 100
+    cell_tracks: 9
+    rail_w: 240
+    contact_w: 90
+    sram_cell_w: 480
+    sram_cell_h: 1200
+    sram_strap_every: 0
+    contact_array_pitch: 360
+    contact_array_w: 140
+    fill_pitch: 1000
+    fill_w: 500
+  intermediate:    # ~16/14 nm class FinFET (recommended default)
+    cpp: 84
+    gate_w: 24
+    fin_pitch: 48
+    fin_w: 10
+    m1_pitch: 64
+    m1_w: 32
+    cell_tracks: 9
+    rail_w: 80
+    contact_w: 24
+    sram_cell_w: 168
+    sram_cell_h: 384
+    sram_strap_every: 0
+    contact_array_pitch: 128
+    contact_array_w: 48
+    fill_pitch: 400
+    fill_w: 200
+  advanced:        # ~5/3 nm class FinFET: aliasing stress test at 10 nm/px
+    cpp: 50
+    gate_w: 16
+    fin_pitch: 28
+    fin_w: 6
+    m1_pitch: 28
+    m1_w: 14
+    cell_tracks: 6
+    rail_w: 36
+    contact_w: 14
+    sram_cell_w: 100
+    sram_cell_h: 220
+    sram_strap_every: 0
+    contact_array_pitch: 64
+    contact_array_w: 24
+    fill_pitch: 240
+    fill_w: 120
