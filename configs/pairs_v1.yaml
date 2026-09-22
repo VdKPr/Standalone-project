@@ -1,0 +1,29 @@
+# Phase 3 pair dataset. Lengths in nm; the layout itself comes from layout_config.
+# Rotation, distortion, blur, noise and charging are Phase 4.
+
+layout_config: configs/layout_v1.yaml
+seed: 20260922
+n_pairs: 36                # hackathon minimum is 30 (Phase 0, E10)
+presets: [intermediate]    # cycled; e.g. [intermediate, mature, advanced]
+world_size_nm: 28000       # large enough to hold a fully drifted search window
+
+reference:
+  pitch_nm: 1.0            # 100x: 1000 px x 1 nm = 1 um FOV
+  size_px: 1000
+  supersample: 2
+
+search:
+  nominal_pitch_nm: 10.0   # 10x: 1000 px x 10 nm = 10 um FOV
+  size_px: 1000
+  supersample: 4
+  scale_error: 0.0         # magnification error; Phase 4 turns this into a range
+  max_scale_error: 0.2     # reserved so the world stays big enough when it does
+
+scenarios:                 # navigation drift, as a radius range around the target
+  centered:    {weight: 0.20, drift_nm: [0, 200]}
+  small_drift: {weight: 0.35, drift_nm: [200, 1500]}
+  large_drift: {weight: 0.30, drift_nm: [1500, 3000]}
+  edge:        {weight: 0.15, drift_nm: [3600, 4400]}
+
+ambiguity:
+  enabled: true            # apply the D4 nearest-center rule on periodic targets

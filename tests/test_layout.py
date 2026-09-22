@@ -116,15 +116,22 @@ def _block(cfg, kind, size=6000.0):
     return p, BLOCK_GENERATORS[kind](np.random.default_rng(1), (0.0, 0.0, size, size), p, lib)
 
 
+def test_periodic_blocks_report_their_lattice(cfg):
+    p, sram = _block(cfg, "sram")
+    assert sram.lattice == (2 * p.sram_cell_w, 2 * p.sram_cell_h) and sram.interior is not None
+    assert _block(cfg, "contact_array")[1].lattice == (p.contact_array_pitch, p.contact_array_pitch)
+    assert _block(cfg, "logic")[1].lattice is None  # random cell order: similar, never identical
+
+
 def test_sram_is_exactly_periodic(cfg):
-    p, lay = _block(cfg, "sram")
+    p, lay = _block(cfg, "sram")[0], _block(cfg, "sram")[1].shapes
     a = rasterize(lay, Window(3000.0, 3000.0, 1.0, 1000), 1)
     b = rasterize(lay, Window(3000.0 + 2 * p.sram_cell_w, 3000.0 + 2 * p.sram_cell_h, 1.0, 1000), 1)
     assert all(np.array_equal(a[k], b[k]) for k in LAYERS)
 
 
 def test_logic_is_not_periodic(cfg):
-    p, lay = _block(cfg, "logic")
+    p, lay = _block(cfg, "logic")[0], _block(cfg, "logic")[1].shapes
     a = rasterize(lay, Window(3000.0, 3000.0, 1.0, 1000), 1)
     b = rasterize(lay, Window(3000.0, 3000.0 + 2 * p.cell_h, 1.0, 1000), 1)
     assert not all(np.array_equal(a[k], b[k]) for k in LAYERS)

@@ -23,6 +23,8 @@ TARGET_CLASSES = ("unique", "quasi_repeat", "periodic")
 class Block:
     kind: str
     box: tuple[float, float, float, float]
+    lattice: tuple[float, float] | None = None       # exact repeat spacing (nm), if the block has one
+    interior: tuple[float, float, float, float] | None = None  # region where that repeat holds
 
 
 @dataclass(frozen=True)
@@ -92,13 +94,18 @@ def classify_point(x: float, y: float, blocks: tuple[Block, ...] | list[Block], 
     - inside a periodic block (sram/contact_array/fill) -> periodic
     - inside logic                                      -> quasi_repeat
     - inside routing/marks                              -> unique
-    The exact ambiguity set (Phase 0, D4) is computed later from rendered
-    footprints; this class only steers the dataset mix.
+
+    For a periodic block the test uses its *interior* (the region where the
+    repeat actually holds), not the block box: a footprint overlapping the
+    array edge or periphery ring is unique, however deep inside the block it
+    sits. Phase 3 derives the exact ambiguity set (Phase 0, D4) from the same
+    geometry, so the label and the ground truth agree.
     """
     for blk in blocks:
         x0, y0, x1, y1 = blk.box
         if x0 <= x < x1 and y0 <= y < y1:
-            d = min(x - x0, x1 - x, y - y0, y1 - y)
+            rx0, ry0, rx1, ry1 = (blk.interior if blk.kind in PERIODIC_KINDS and blk.interior else blk.box)
+            d = min(x - rx0, rx1 - x, y - ry0, ry1 - y)
             if d < half_footprint:
                 return "unique", blk, d
             if blk.kind in PERIODIC_KINDS:
@@ -110,8 +117,14 @@ def classify_point(x: float, y: float, blocks: tuple[Block, ...] | list[Block], 
 
 
 def select_target(rng: np.random.Generator, blocks, tcfg: dict, center, fov_nm: float,
-                  reference_fov_nm: float, wanted: str | None = None) -> Target:
-    """Rejection-sample a target point whose whole reference footprint lies inside the search FOV."""
+                  reference_fov_nm: float, wanted: str | None = None,
+                  limit_nm: float | None = None) -> Target:
+    """Rejection-sample a target point whose whole reference footprint lies inside the search FOV.
+
+    ``limit_nm`` overrides how far from the world center the target may sit. Pair
+    generation (Phase 3) passes a smaller limit so that a *drifted* search window
+    still falls inside the world.
+    """
     if wanted is None:
         classes = list(tcfg["class_weights"])
         w = np.array([tcfg["class_weights"][c] for c in classes], dtype=float)
@@ -119,7 +132,9 @@ def select_target(rng: np.random.Generator, blocks, tcfg: dict, center, fov_nm: 
     if wanted not in TARGET_CLASSES:
         raise ValueError(f"unknown target class {wanted!r}")
     half = reference_fov_nm / 2
-    lim = fov_nm / 2 - half - tcfg["margin_nm"]
+    lim = fov_nm / 2 - half - tcfg["margin_nm"] if limit_nm is None else limit_nm
+    if lim <= 0:
+        raise ValueError(f"target limit {lim} nm leaves no room; enlarge the world or reduce the drift")
     for _ in range(tcfg["max_tries"]):
         # Integer-nm target points keep reference renders free of edge ties.
         x = float(np.round(center[0] + rng.uniform(-lim, lim)))
@@ -132,20 +147,24 @@ def select_target(rng: np.random.Generator, blocks, tcfg: dict, center, fov_nm: 
     return Target(x, y, cls, wanted, blk.kind if blk else None, float(d))
 
 
-def generate_world(cfg: dict, seed: int, preset: str | None = None, target_class: str | None = None) -> World:
+def generate_world(cfg: dict, seed: int, preset: str | None = None, target_class: str | None = None,
+                   target_limit_nm: float | None = None) -> World:
     preset_name, p = process_params(cfg, preset)
     wcfg = cfg["world"]
     s_floor, s_lib, s_blocks, s_target = np.random.SeedSequence(seed).spawn(4)
 
-    blocks = tuple(floorplan(np.random.default_rng(s_floor), wcfg))
+    plan = floorplan(np.random.default_rng(s_floor), wcfg)
     lib = build_library(np.random.default_rng(s_lib), p)
     builder = LayoutBuilder()
-    for blk, s in zip(blocks, s_blocks.spawn(len(blocks))):
-        for layer, r in BLOCK_GENERATORS[blk.kind](np.random.default_rng(s), blk.box, p, lib).items():
+    blocks = []
+    for blk, s in zip(plan, s_blocks.spawn(len(plan))):
+        result = BLOCK_GENERATORS[blk.kind](np.random.default_rng(s), blk.box, p, lib)
+        for layer, r in result.shapes.items():
             builder.add(layer, clip(r, blk.box))
+        blocks.append(Block(blk.kind, blk.box, result.lattice, result.interior))
 
     size = float(wcfg["size_nm"])
     target = select_target(np.random.default_rng(s_target), blocks, cfg["target"], (size / 2, size / 2),
-                           wcfg["fov_nm"], wcfg["reference_fov_nm"], target_class)
+                           wcfg["fov_nm"], wcfg["reference_fov_nm"], target_class, target_limit_nm)
     return World(seed, preset_name, p, size, wcfg["fov_nm"], wcfg["reference_fov_nm"],
-                 blocks, builder.build(), target)
+                 tuple(blocks), builder.build(), target)

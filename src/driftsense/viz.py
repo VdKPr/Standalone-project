@@ -71,6 +71,48 @@ def plot_layout_sample(world, search_img, reference_img, zoom_rgb, search_win, z
     plt.close(fig)
 
 
+def plot_pair(sample, out_path: str | Path) -> None:
+    """Reference next to search, with the footprint, the ground truth and the drift vector."""
+    n = sample.search.shape[0]
+    win = sample.search_window
+    half = sample.world.reference_fov_nm / 2 / win.pitch_nm
+    cx = cy = (n - 1) / 2
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 7.2))
+
+    ax = axes[0]
+    ax.imshow(sample.reference, cmap="gray", vmin=0, vmax=1, interpolation="antialiased")
+    ax.plot(cx, cy, "r+", ms=14, mew=2)
+    _frame(ax, sample.reference.shape[0])
+    ax.set_title(f"reference  {sample.reference_window.pitch_nm:g} nm/px "
+                 f"({sample.reference.shape[0] * sample.reference_window.pitch_nm / 1000:g} um FOV)")
+
+    ax = axes[1]
+    ax.imshow(sample.search, cmap="gray", vmin=0, vmax=1, interpolation="antialiased")
+    # Positions that are indistinguishable from the target (Phase 0, D4).
+    if sample.is_ambiguous:
+        from .pairs.ambiguity import equivalent_locations
+        eq = equivalent_locations(sample.world, (sample.target_x_nm, sample.target_y_nm),
+                                  sample.world.reference_fov_nm, win)
+        ex, ey = zip(*[win.world_to_pixel(x, y) for x, y in eq])
+        ax.plot(ex, ey, ".", color="deepskyblue", ms=4, label=f"equivalent x{len(eq)}")
+    ax.plot(cx, cy, "o", mfc="none", mec="lime", ms=10, mew=1.6, label="image center (commanded)")
+    ax.annotate("", xy=(sample.gt_x, sample.gt_y), xytext=(cx, cy),
+                arrowprops=dict(arrowstyle="->", color="yellow", lw=1.5))
+    _footprint(ax, sample.gt_x, sample.gt_y, half)
+    _frame(ax, n)
+    dx, dy = sample.drift_nm
+    ax.set_title(f"search  {win.pitch_nm:g} nm/px   GT = ({sample.gt_x:.2f}, {sample.gt_y:.2f}) px")
+    ax.legend(loc="lower right", fontsize=8, framealpha=0.85)
+
+    fig.suptitle(f"{sample.sample_id}  seed={sample.seed}  preset={sample.preset}  scenario={sample.scenario}  "
+                 f"class={sample.target_class} in {sample.block_kind}  "
+                 f"drift=({dx:.0f}, {dy:.0f}) nm = ({dx / win.pitch_nm:.1f}, {dy / win.pitch_nm:.1f}) px  "
+                 f"equivalents={sample.n_equivalent}")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=80)
+    plt.close(fig)
+
+
 def plot_contact_sheet(entries, out_path: str | Path, cols: int = 5) -> None:
     """entries: list of (search_img, (gx, gy), half_footprint_px, title)."""
     rows = (len(entries) + cols - 1) // cols

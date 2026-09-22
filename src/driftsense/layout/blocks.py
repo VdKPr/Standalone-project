@@ -16,6 +16,7 @@ result to the box.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -26,6 +27,21 @@ from .geometry import Layout, LayoutBuilder, mirror_x, mirror_y, rects, translat
 Box = tuple[float, float, float, float]
 
 PERIODIC_KINDS = frozenset({"sram", "contact_array", "fill"})
+
+
+@dataclass(frozen=True)
+class BlockResult:
+    """Geometry of one block, plus its exact translational symmetry if it has one.
+
+    ``lattice`` is the repeat spacing (nm) and ``interior`` the region over which
+    that repeat actually holds: periphery rings, array edges and partial cells
+    are excluded. Phase 3 uses both to derive the ambiguity set (Phase 0, D4)
+    from the geometry instead of guessing it from pixels.
+    """
+
+    shapes: Layout
+    lattice: tuple[float, float] | None = None
+    interior: Box | None = None
 
 
 def _ring(b: LayoutBuilder, layer: str, box: Box, width: float) -> None:
@@ -40,7 +56,7 @@ def _place(b: LayoutBuilder, cell: CellTemplate, x: float, y: float, flip_y: boo
             b.add(layer, translate(mirror_y(r, cell.height) if flip_y else r, x, y))
 
 
-def logic_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def logic_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     """Rows of standard cells in random order; every other row is mirrored so rails are shared."""
     x0, y0, x1, y1 = box
     names = list(lib.cells)
@@ -64,10 +80,11 @@ def logic_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Libra
     if n_rows:
         ys = y0 + np.arange(n_rows + 1) * p.cell_h
         b.add("M1", rects(xs, ys - p.rail_w / 2, x_end, ys + p.rail_w / 2))
-    return b.build()
+    # Cell order is random, so rows repeat only approximately: no exact lattice.
+    return BlockResult(b.build())
 
 
-def sram_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def sram_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     """Bitcell array tiled with x/y mirroring (period 2w x 2h), surrounded by a periphery ring."""
     cell = lib.bitcell
     w, h = cell.width, cell.height
@@ -77,7 +94,7 @@ def sram_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Librar
     nx, ny = int((x1 - 2 * ring - ax0) // w), int((y1 - 2 * ring - ay0) // h)
     b = LayoutBuilder()
     if nx < 1 or ny < 1:
-        return b.build()
+        return BlockResult(b.build())
     for layer, r in cell.shapes.items():
         if not len(r):
             continue
@@ -90,30 +107,34 @@ def sram_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Librar
             off = np.stack([gx.ravel(), gy.ravel(), gx.ravel(), gy.ravel()], axis=1)
             b.add(layer, (v[None, :, :] + off[:, None, :]).reshape(-1, 4))
     ax1, ay1 = ax0 + nx * w, ay0 + ny * h
-    if p.sram_strap_every > 0:
+    straps = p.sram_strap_every > 0
+    if straps:
         ys = ay0 + np.arange(p.sram_strap_every, ny, p.sram_strap_every) * h
         b.add("M1", rects(ax0, ys - p.m1_w, ax1, ys + p.m1_w))
     _ring(b, "M1", (ax0 - 1.5 * ring, ay0 - 1.5 * ring, ax1 + 1.5 * ring, ay1 + 1.5 * ring), ring)
-    return b.build()
+    # Mirrored tiling repeats every two cells; straps would break the y period.
+    lattice = None if straps else (2 * w, 2 * h)
+    return BlockResult(b.build(), lattice, (ax0, ay0, ax1, ay1))
 
 
-def contact_array_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def contact_array_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     x0, y0, x1, y1 = box
     pc, s, ring = p.contact_array_pitch, p.contact_array_w, p.rail_w
     xs = np.arange(x0 + 2 * ring + pc / 2, x1 - 2 * ring - pc / 2 + 1e-9, pc)
     ys = np.arange(y0 + 2 * ring + pc / 2, y1 - 2 * ring - pc / 2 + 1e-9, pc)
     b = LayoutBuilder()
     if not len(xs) or not len(ys):
-        return b.build()
+        return BlockResult(b.build())
     gx, gy = np.meshgrid(xs, ys)
     b.add("CONTACT", rects(gx - s / 2, gy - s / 2, gx + s / 2, gy + s / 2))
     plate = (xs[0] - pc / 2, ys[0] - pc / 2, xs[-1] + pc / 2, ys[-1] + pc / 2)
     b.add("ACTIVE", rects(*plate))
     _ring(b, "M1", (plate[0] - 1.5 * ring, plate[1] - 1.5 * ring, plate[2] + 1.5 * ring, plate[3] + 1.5 * ring), ring)
-    return b.build()
+    # The uniform plate does not break the contact period; its edge does, hence interior = plate.
+    return BlockResult(b.build(), (pc, pc), plate)
 
 
-def routing_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def routing_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     """Unidirectional M1 routing: random-length segments on horizontal tracks, vias at some ends."""
     x0, y0, x1, y1 = box
     unit, half_w = p.cpp / 2, p.m1_w / 2
@@ -134,7 +155,7 @@ def routing_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Lib
         b.add("M1", rects(s[:, 0], y - half_w, s[:, 1], y + half_w))
         vx = np.concatenate([s[rng.random(len(s)) < 0.3, 0] + half_w, s[rng.random(len(s)) < 0.3, 1] - half_w])
         b.add("CONTACT", rects(vx - half_w, y - half_w, vx + half_w, y + half_w))
-    return b.build()
+    return BlockResult(b.build())
 
 
 def _mark(rng: np.random.Generator, kind: str, s: float) -> Layout:
@@ -171,7 +192,7 @@ def _mark(rng: np.random.Generator, kind: str, s: float) -> Layout:
 MARK_KINDS = ("cross", "box_in_box", "L", "grating", "open_frame")
 
 
-def marks_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def marks_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     """A few large, non-overlapping unique features (alignment-mark-like)."""
     x0, y0, x1, y1 = box
     b, placed = LayoutBuilder(), []
@@ -190,26 +211,26 @@ def marks_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Libra
         placed.append(bb)
         for layer, r in _mark(rng, MARK_KINDS[rng.integers(len(MARK_KINDS))], s).items():
             b.add(layer, translate(r, cx, cy))
-    return b.build()
+    return BlockResult(b.build())
 
 
-def fill_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> Layout:
+def fill_block(rng: np.random.Generator, box: Box, p: ProcessParams, lib: Library) -> BlockResult:
     x0, y0, x1, y1 = box
     pf, s = p.fill_pitch, p.fill_w
     xs = np.arange(x0 + pf / 2, x1 - pf / 2 + 1e-9, pf)
     ys = np.arange(y0 + pf / 2, y1 - pf / 2 + 1e-9, pf)
     b = LayoutBuilder()
     if not len(xs) or not len(ys):
-        return b.build()
+        return BlockResult(b.build())
     gx, gy = np.meshgrid(xs, ys)
     b.add("M1", rects(gx - s / 2, gy - s / 2, gx + s / 2, gy + s / 2))
     a = 0.3 * s  # staggered active fill between the metal squares
     b.add("ACTIVE", rects(gx[:-1, :-1] + pf / 2 - a, gy[:-1, :-1] + pf / 2 - a,
                           gx[:-1, :-1] + pf / 2 + a, gy[:-1, :-1] + pf / 2 + a))
-    return b.build()
+    return BlockResult(b.build(), (pf, pf), (xs[0], ys[0], xs[-1], ys[-1]))
 
 
-BLOCK_GENERATORS: dict[str, Callable[..., Layout]] = {
+BLOCK_GENERATORS: dict[str, Callable[..., BlockResult]] = {
     "logic": logic_block,
     "sram": sram_block,
     "contact_array": contact_array_block,
